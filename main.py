@@ -20,6 +20,8 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
+# --- ✨ New Environment Variable for Run Mode ---
+RUN_MODE = os.getenv("RUN_MODE", "bot")
 
 # --- Validations ---
 if not all([TELEGRAM_TOKEN, OPENAI_API_KEY, MONGO_URI]):
@@ -41,7 +43,7 @@ logger = logging.getLogger(__name__)
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Exception while handling an update:", exc_info=context.error)
     if isinstance(context.error, Conflict):
-        logger.warning("Conflict error detected. Another bot instance might be running.")
+        logger.warning("Conflict error detected. Another bot instance might be running. This is often caused by a cron job re-running the bot script.")
         return
     try:
         if isinstance(update, Update) and update.effective_chat:
@@ -252,14 +254,9 @@ async def cancel_list_conversation(update: Update, context: ContextTypes.DEFAULT
     await update.message.reply_text("הוספת הרשימה בוטלה. חוזר לתפריט הראשי.", reply_markup=get_main_menu_keyboard())
     return ConversationHandler.END
 
-# --- Flask Keep-Alive Server ---
-flask_app = Flask(__name__)
-@flask_app.route('/')
-def health_check(): return "I'm alive!", 200
-def run_flask(): flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-
-# --- Main Application Setup ---
-def main() -> None:
+# --- Main Application Setup and Execution ---
+def run_bot():
+    """Initializes and runs the Telegram bot."""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_error_handler(error_handler)
 
@@ -287,14 +284,36 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("clear_all", delete_all_command))
-    # This handler now manages all main menu buttons EXCEPT 'add_list' which is an entry point.
     application.add_handler(CallbackQueryHandler(button_click_handler, pattern='^main_(?!add_list)'))
 
-    logger.info("Starting bot polling...")
+    logger.info("Starting bot in polling mode...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
+def run_scheduled_job():
+    """Runs a scheduled job. Placeholder for future cron tasks."""
+    logger.info("Running a scheduled job...")
+    # TODO: Add your cron job logic here
+    # For example: db.cleanup_old_entries()
+    logger.info("Scheduled job finished.")
+
 if __name__ == "__main__":
-    flask_thread = Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    main()
+    logger.info(f"Starting application in '{RUN_MODE}' mode.")
+    
+    if RUN_MODE == "bot":
+        # The Flask server is only needed for the keep-alive mechanism of the bot
+        flask_app = Flask(__name__)
+        @flask_app.route('/')
+        def health_check(): return "I'm alive!", 200
+        
+        flask_thread = Thread(target=lambda: flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080))))
+        flask_thread.daemon = True
+        flask_thread.start()
+        
+        run_bot()
+        
+    elif RUN_MODE == "cron":
+        run_scheduled_job()
+        
+    else:
+        logger.error(f"Unknown RUN_MODE: '{RUN_MODE}'. Exiting.")
+        sys.exit(1)
