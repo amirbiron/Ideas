@@ -126,6 +126,9 @@ async def generate_ideas(user_entries: list, category: str) -> str:
 - שמור על אותו רמת פירוט ומורכבות
 - השתמש באותו סוג מילים וביטויים
 - הרעיונות צריכים להרגיש כאילו אני כתבתי אותם
+- כתוב בפורמט רשימה ממוספרת: 1. 2. 3.
+- הוסף מעבר שורה בין כל רעיון
+- אל תכתוב הקדמות או הסברים, רק את 3 הרעיונות הממוספרים
 
 כתוב 3 רעיונות בעברית ידידותית."""
 
@@ -133,7 +136,7 @@ async def generate_ideas(user_entries: list, category: str) -> str:
         response = await openai_client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": f"אתה מומחה בחיקוי סגנון כתיבה. המשימה שלך היא לנתח את סגנון הכתיבה של המשתמש בתחום '{category}' ולייצר רעיונות חדשים שמתאימים בדיוק לסגנון שלו - אותו טון, אותה רמת פירוט, ואותו סוג רעיונות."},
+                {"role": "system", "content": f"אתה מומחה בחיקוי סגנון כתיבה. המשימה שלך היא לנתח את סגנון הכתיבה של המשתמש בתחום '{category}' ולייצר רעיונות חדשים שמתאימים בדיוק לסגנון שלו - אותו טון, אותה רמת פירוט, ואותו סוג רעיונות. חשוב: תמיד כתוב בפורמט רשימה ממוספרת (1. 2. 3.) עם מעבר שורה בין רעיונות, ללא הקדמות או הסברים."},
                 {"role": "user", "content": prompt}
             ], max_tokens=1200, temperature=0.7
         )
@@ -379,6 +382,7 @@ def run_bot():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("clear_all", delete_all_command))
+    application.add_handler(CallbackQueryHandler(button_click_handler, pattern='^page_'))
     application.add_handler(CallbackQueryHandler(button_click_handler, pattern='^main_(?!add_list)'))
 
     logger.info("Starting bot in polling mode...")
