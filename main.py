@@ -8,10 +8,10 @@ from dotenv import load_dotenv
 from flask import Flask
 from pymongo import MongoClient
 from openai import AsyncOpenAI
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, ContextTypes,
-    ConversationHandler
+    ConversationHandler, CallbackQueryHandler
 )
 
 # --- Environment Setup ---
@@ -22,7 +22,7 @@ MONGO_URI = os.getenv("MONGO_URI")
 
 # --- Validations ---
 if not all([TELEGRAM_TOKEN, OPENAI_API_KEY, MONGO_URI]):
-    print("Error: Missing one or more environment variables (TELEGRAM_TOKEN, OPENAI_API_KEY, MONGO_URI)")
+    print("Error: Missing one or more environment variables")
     sys.exit(1)
 
 # --- Client Initializations ---
@@ -30,8 +30,7 @@ openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # --- Logging Setup ---
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -47,14 +46,9 @@ except Exception as e:
     logger.error(f"❌ Could not connect to MongoDB: {e}")
     sys.exit(1)
 
-# --- Data Functions (MongoDB implementation) ---
+# --- Data Functions ---
 def save_entry(user_id: str, content: str, category: str):
-    entry = {
-        "user_id": user_id,
-        "content": content,
-        "category": category,
-        "created_at": datetime.utcnow()
-    }
+    entry = {"user_id": user_id, "content": content, "category": category, "created_at": datetime.utcnow()}
     entries_collection.insert_one(entry)
 
 def get_user_entries(user_id: str, category: str, limit: int = 50):
@@ -64,8 +58,7 @@ def get_all_user_entries(user_id: str, limit: int = 10):
     return list(entries_collection.find({"user_id": user_id}).sort("created_at", -1).limit(limit))
 
 def delete_user_entries(user_id: str):
-    result = entries_collection.delete_many({"user_id": user_id})
-    return result.deleted_count
+    return entries_collection.delete_many({"user_id": user_id}).deleted_count
 
 # --- OpenAI Logic ---
 async def generate_ideas(user_entries: list, category: str) -> str:
@@ -73,7 +66,6 @@ async def generate_ideas(user_entries: list, category: str) -> str:
         return f"אין לך עדיין רשומות בקטגוריית '{category}'. כתוב לי כמה דברים קודם!"
     
     entries_text = "\n".join([f"- {entry['content']}" for entry in user_entries[:20]])
-    
     prompt = f"""
 אתה מכונת רעיונות חכמה. קיבלת את הדברים הבאים שמשתמש כתב בקטגוריה '{category}':
 
@@ -87,7 +79,6 @@ async def generate_ideas(user_entries: list, category: str) -> str:
 
 כתוב בעברית בצורה ידידותית וחמה.
 """
-
     try:
         response = await openai_client.chat.completions.create(
             model="gpt-4",
@@ -95,8 +86,7 @@ async def generate_ideas(user_entries: list, category: str) -> str:
                 {"role": "system", "content": f"אתה מכונת רעיונות חכמה שכותבת בעברית ומתמחה בתחום '{category}'."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=1000,  # Increased token limit
-            temperature=0.8
+            max_tokens=1000, temperature=0.8
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -106,100 +96,128 @@ async def generate_ideas(user_entries: list, category: str) -> str:
 # --- Conversation Handler States ---
 CHOOSE_CATEGORY = range(1)
 
-# --- Telegram Command Handlers ---
+# --- Main Menu ---
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    keyboard = [
+        [InlineKeyboardButton("🤖 בקש רעיון לבוט", callback_data='idea_bots')],
+        [InlineKeyboardButton("📖 בקש רעיון למדריך", callback_data='idea_guides')],
+        [InlineKeyboardButton("📚 הצג את הרעיונות שלי", callback_data='my_ideas')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    # Check if we need to edit a message or send a new one
+    if update.callback_query:
+        # If it's a button press, edit the message
+        await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
+    else:
+        # If it's a command, send a new message
+        await update.message.reply_text(text, reply_markup=reply_markup)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_message = """
+    welcome_text = """
 🧠 שלום! אני מכונת הרעיונות שלך!
 
 איך זה עובד?
 1️⃣ כתוב לי כל דבר - רעיון, מחשבה, פרויקט.
-2️⃣ אני אשאל אותך לאיזו קטגוריה לשייך את הרעיון: "יצירת בוטים" או "מדריכים".
-3️⃣ בקש רעיונות חדשים לפי קטגוריה!
+2️⃣ אני אשאל אותך לאיזו קטגוריה לשייך אותו.
+3️⃣ השתמש בכפתורים כדי לבקש רעיונות חדשים!
 
-פקודות זמינות:
-🤖 /idea_bots - קבל רעיונות ליצירת בוטים
-📖 /idea_guides - קבל רעיונות לכתיבת מדריכים
-📚 /my_ideas - צפה בהיסטוריה שלך
-🗑️ /clear_all - מחק את כל הנתונים שלך
-❓ /help - הצג הודעה זו
-
-בוא נתחיל! כתוב לי משהו...
+הקש /menu בכל שלב כדי לראות את התפריט שוב.
 """
-    await update.message.reply_text(welcome_message)
+    await show_main_menu(update, context, welcome_text)
 
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_main_menu(update, context, "תפריט ראשי:")
+
+# --- Button Click (CallbackQuery) Handler ---
+async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer() # Acknowledge the button press
+    
+    command = query.data
+    
+    if command == 'idea_bots':
+        await get_idea_by_category(update, context, category="יצירת בוטים")
+    elif command == 'idea_guides':
+        await get_idea_by_category(update, context, category="מדריכים")
+    elif command == 'my_ideas':
+        await show_my_ideas_command(update, context)
+    elif command.startswith('category_'):
+        await category_choice(update, context)
+
+# --- Command Logic ---
 async def get_idea_by_category(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
     user_id = str(update.effective_user.id)
-    await update.message.reply_text(f"🤔 חושב על רעיונות בשבילך בקטגוריית '{category}'...")
+    message = update.callback_query.message
+    await message.edit_text(f"🤔 חושב על רעיונות בשבילך בקטגוריית '{category}'...")
     entries = get_user_entries(user_id, category)
     ideas = await generate_ideas(entries, category)
-    await update.message.reply_text(f"💡 הנה הרעיונות שלך:\n\n{ideas}")
+    await message.edit_text(f"💡 הנה הרעיונות שלך:\n\n{ideas}")
+    # After showing ideas, show the main menu again for convenience
+    await show_main_menu(update, context, "מה עוד תרצה לעשות?")
 
-async def idea_bots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await get_idea_by_category(update, context, category="יצירת בוטים")
-
-async def idea_guides_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await get_idea_by_category(update, context, category="מדריכים")
 
 async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     entries = get_all_user_entries(user_id, limit=10)
+    message = update.callback_query.message
     
     if not entries:
-        await update.message.reply_text("אין לך עדיין רשומות. כתוב לי משהו קודם!")
+        await message.edit_text("אין לך עדיין רשומות. כתוב לי משהו קודם!")
         return
     
-    message = "📚 10 הרשומות האחרונות שלך (מכל הקטגוריות):\n\n"
+    text = "📚 10 הרשומות האחרונות שלך (מכל הקטגוריות):\n\n"
     for i, entry in enumerate(entries, 1):
         content = entry['content']
-        category = entry['category']
+        # *** THE FIX IS HERE ***
+        # Use .get() to safely access 'category' with a default value
+        category = entry.get('category', 'ללא קטגוריה') 
+        
         date_obj = entry['created_at']
         date_str = date_obj.strftime('%d/%m %H:%M')
-        
         short_content = content[:60] + "..." if len(content) > 60 else content
-        message += f"*{i}. {short_content}*\n*קטגוריה:* {category} | *תאריך:* {date_str}\n\n"
+        text += f"*{i}. {short_content}*\n*קטגוריה:* {category} | *תאריך:* {date_str}\n\n"
     
-    await update.message.reply_text(message, parse_mode='Markdown')
+    await message.edit_text(text, parse_mode='Markdown')
+    # After showing ideas, show the main menu again for convenience
+    await show_main_menu(update, context, "מה עוד תרצה לעשות?")
+
 
 async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     deleted_count = delete_user_entries(user_id)
-    
-    if deleted_count > 0:
-        await update.message.reply_text(f"🗑️ נמחקו {deleted_count} רשומות מהמאגר שלך")
-    else:
-        await update.message.reply_text("אין לך רשומות למחיקה")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start(update, context) # The start message is a good help message
+    response_text = f"🗑️ נמחקו {deleted_count} רשומות." if deleted_count > 0 else "לא היו רשומות למחיקה."
+    await update.message.reply_text(response_text)
 
 # --- Conversation Logic for saving entries ---
 async def text_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Start the conversation to categorize a new text entry."""
     context.user_data['new_entry_content'] = update.message.text
-    reply_keyboard = [["יצירת בוטים", "מדריכים"]]
-    await update.message.reply_text(
-        "לאיזו קטגוריה לשייך את הרעיון הזה?",
-        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True),
-    )
+    keyboard = [
+        [InlineKeyboardButton("יצירת בוטים", callback_data='category_יצירת בוטים')],
+        [InlineKeyboardButton("מדריכים", callback_data='category_מדריכים')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("לאיזו קטגוריה לשייך את הרעיון?", reply_markup=reply_markup)
     return CHOOSE_CATEGORY
 
 async def category_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle the category choice and save the entry."""
-    category = update.message.text
+    query = update.callback_query
+    category = query.data.split('_')[1]
     content = context.user_data.pop('new_entry_content', None)
     user_id = str(update.effective_user.id)
 
     if not content:
-        await update.message.reply_text("אופס, משהו השתבש. נסה לשלוח את הרעיון שוב.", reply_markup=ReplyKeyboardRemove())
+        await query.message.edit_text("אופס, משהו השתבש. נסה לשלוח את הרעיון שוב.")
         return ConversationHandler.END
 
     save_entry(user_id, content, category)
-    await update.message.reply_text(f"✅ רשמתי! הרעיון נשמר בקטגוריית '{category}'.", reply_markup=ReplyKeyboardRemove())
+    await query.message.edit_text(f"✅ רשמתי! הרעיון נשמר בקטגוריית '{category}'.")
+    # After saving, show the main menu again for convenience
+    await show_main_menu(update, context, "מה עוד תרצה לעשות?")
     return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancels and ends the conversation."""
-    await update.message.reply_text("הפעולה בוטלה.", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("הפעולה בוטלה.")
+    await show_main_menu(update, context, "תפריט ראשי:")
     return ConversationHandler.END
 
 # --- Flask Keep-Alive Server ---
@@ -212,24 +230,21 @@ def run_flask(): flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8
 def main() -> None:
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Conversation handler for adding new entries
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, text_entry)],
         states={
-            CHOOSE_CATEGORY: [MessageHandler(filters.Regex("^(יצירת בוטים|מדריכים)$"), category_choice)],
+            CHOOSE_CATEGORY: [CallbackQueryHandler(category_choice, pattern='^category_')],
         },
         fallbacks=[CommandHandler("cancel", cancel_conversation)],
     )
     application.add_handler(conv_handler)
 
-    # Command Handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("idea_bots", idea_bots_command))
-    application.add_handler(CommandHandler("idea_guides", idea_guides_command))
-    application.add_handler(CommandHandler("my_ideas", show_my_ideas_command))
-    application.add_handler(CommandHandler("clear_all", delete_all_command))
-    application.add_handler(CommandHandler("help", help_command))
-    
+    application.add_handler(CommandHandler("menu", menu_command))
+    application.add_handler(CommandHandler("clear_all", delete_all_command)) # Hidden command
+    # This handler is for the main menu buttons
+    application.add_handler(CallbackQueryHandler(button_click_handler, pattern='^(idea_bots|idea_guides|my_ideas)$'))
+
     logger.info("Starting bot polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
