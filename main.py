@@ -379,6 +379,7 @@ def run_bot():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("clear_all", delete_all_command))
+    application.add_handler(CallbackQueryHandler(button_click_handler, pattern='^page_'))
     application.add_handler(CallbackQueryHandler(button_click_handler, pattern='^main_(?!add_list)'))
 
     logger.info("Starting bot in polling mode...")
