@@ -112,8 +112,7 @@ async def generate_ideas(user_entries: list, category: str) -> str:
         return f"אין לך עדיין רשומות בקטגוריית '{category}'. כתוב לי כמה דברים קודם!"
     
     # משתמש בכל הרעיונות, לא רק ב-20 הראשונים
-    entries_text = "
-".join([f"- {entry['content']}" for entry in user_entries])
+    entries_text = "\n".join([f"- {entry['content']}" for entry in user_entries])
     
     # פרומפט משופר שמדגיש הישארות נאמן לסגנון
     prompt = f"""על בסיס כל הרעיונות שלי בקטגוריית '{category}':
@@ -128,7 +127,7 @@ async def generate_ideas(user_entries: list, category: str) -> str:
 - השתמש באותו סוג מילים וביטויים
 - הרעיונות צריכים להרגיש כאילו אני כתבתי אותם
 
-כתוב 3 רעיونות בעברית ידידותית."""
+כתוב 3 רעיונות בעברית ידידותית."""
 
     try:
         response = await openai_client.chat.completions.create(
