@@ -33,6 +33,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # --- Database Setup (MongoDB) ---
@@ -68,15 +69,12 @@ async def generate_ideas(user_entries: list, category: str) -> str:
     entries_text = "\n".join([f"- {entry['content']}" for entry in user_entries[:20]])
     prompt = f"""
 אתה מכונת רעיונות חכמה. קיבלת את הדברים הבאים שמשתמש כתב בקטגוריה '{category}':
-
 {entries_text}
-
 על בסיס הדברים שהוא כתב, הצע לו 3 רעיונות חדשים ומעניינים שמתאימים לסגנון שלו ולתחומי העניין שלו, ספציפית בתחום של '{category}'.
 הרעיונות צריכים להיות:
 1. מעשיים ובני-ביצוע
 2. בסגנון שלו
 3. משהו שהוא עדיין לא עשה
-
 כתוב בעברית בצורה ידידותית וחמה.
 """
     try:
@@ -98,31 +96,22 @@ CHOOSE_CATEGORY = range(1)
 
 # --- Main Menu ---
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    # *** CHANGE 1: Added 'main_' prefix to callback_data ***
     keyboard = [
-        [InlineKeyboardButton("🤖 בקש רעיון לבוט", callback_data='idea_bots')],
-        [InlineKeyboardButton("📖 בקש רעיון למדריך", callback_data='idea_guides')],
-        [InlineKeyboardButton("📚 הצג את הרעיונות שלי", callback_data='my_ideas')],
+        [InlineKeyboardButton("🤖 בקש רעיון לבוט", callback_data='main_idea_bots')],
+        [InlineKeyboardButton("📖 בקש רעיון למדריך", callback_data='main_idea_guides')],
+        [InlineKeyboardButton("📚 הצג את הרעיונות שלי", callback_data='main_my_ideas')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    # Check if we need to edit a message or send a new one
     if update.callback_query:
-        # If it's a button press, edit the message
-        await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
+        # Prevent "Message is not modified" error by checking content
+        if update.callback_query.message.text != text or update.callback_query.message.reply_markup != reply_markup:
+            await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
     else:
-        # If it's a command, send a new message
         await update.message.reply_text(text, reply_markup=reply_markup)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_text = """
-🧠 שלום! אני מכונת הרעיונות שלך!
-
-איך זה עובד?
-1️⃣ כתוב לי כל דבר - רעיון, מחשבה, פרויקט.
-2️⃣ אני אשאל אותך לאיזו קטגוריה לשייך אותו.
-3️⃣ השתמש בכפתורים כדי לבקש רעיונות חדשים!
-
-הקש /menu בכל שלב כדי לראות את התפריט שוב.
-"""
+    welcome_text = "שלום! אני מכונת הרעיונות שלך. תוכל לכתוב לי רעיון או להשתמש בתפריט:"
     await show_main_menu(update, context, welcome_text)
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -131,9 +120,10 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Button Click (CallbackQuery) Handler ---
 async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer() # Acknowledge the button press
+    await query.answer() 
     
-    command = query.data
+    # *** CHANGE 2: Remove 'main_' prefix to get the real command ***
+    command = query.data.replace('main_', '')
     
     if command == 'idea_bots':
         await get_idea_by_category(update, context, category="יצירת בוטים")
@@ -141,8 +131,6 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await get_idea_by_category(update, context, category="מדריכים")
     elif command == 'my_ideas':
         await show_my_ideas_command(update, context)
-    elif command.startswith('category_'):
-        await category_choice(update, context)
 
 # --- Command Logic ---
 async def get_idea_by_category(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
@@ -152,9 +140,7 @@ async def get_idea_by_category(update: Update, context: ContextTypes.DEFAULT_TYP
     entries = get_user_entries(user_id, category)
     ideas = await generate_ideas(entries, category)
     await message.edit_text(f"💡 הנה הרעיונות שלך:\n\n{ideas}")
-    # After showing ideas, show the main menu again for convenience
     await show_main_menu(update, context, "מה עוד תרצה לעשות?")
-
 
 async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -163,24 +149,20 @@ async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TY
     
     if not entries:
         await message.edit_text("אין לך עדיין רשומות. כתוב לי משהו קודם!")
+        await show_main_menu(update, context, "מה תרצה לעשות כעת?")
         return
     
     text = "📚 10 הרשומות האחרונות שלך (מכל הקטגוריות):\n\n"
     for i, entry in enumerate(entries, 1):
         content = entry['content']
-        # *** THE FIX IS HERE ***
-        # Use .get() to safely access 'category' with a default value
         category = entry.get('category', 'ללא קטגוריה') 
-        
         date_obj = entry['created_at']
         date_str = date_obj.strftime('%d/%m %H:%M')
         short_content = content[:60] + "..." if len(content) > 60 else content
         text += f"*{i}. {short_content}*\n*קטגוריה:* {category} | *תאריך:* {date_str}\n\n"
     
     await message.edit_text(text, parse_mode='Markdown')
-    # After showing ideas, show the main menu again for convenience
     await show_main_menu(update, context, "מה עוד תרצה לעשות?")
-
 
 async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -201,6 +183,7 @@ async def text_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def category_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    await query.answer()
     category = query.data.split('_')[1]
     content = context.user_data.pop('new_entry_content', None)
     user_id = str(update.effective_user.id)
@@ -211,7 +194,6 @@ async def category_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     save_entry(user_id, content, category)
     await query.message.edit_text(f"✅ רשמתי! הרעיון נשמר בקטגוריית '{category}'.")
-    # After saving, show the main menu again for convenience
     await show_main_menu(update, context, "מה עוד תרצה לעשות?")
     return ConversationHandler.END
 
@@ -241,9 +223,10 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu_command))
-    application.add_handler(CommandHandler("clear_all", delete_all_command)) # Hidden command
-    # This handler is for the main menu buttons
-    application.add_handler(CallbackQueryHandler(button_click_handler, pattern='^(idea_bots|idea_guides|my_ideas)$'))
+    application.add_handler(CommandHandler("clear_all", delete_all_command))
+    
+    # *** CHANGE 3: Added a specific pattern for the main menu handler ***
+    application.add_handler(CallbackQueryHandler(button_click_handler, pattern='^main_'))
 
     logger.info("Starting bot polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
