@@ -7,9 +7,12 @@ from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask
 from pymongo import MongoClient
-from openai import AsyncOpenAI  # Updated import
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from openai import AsyncOpenAI
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, filters, ContextTypes,
+    ConversationHandler
+)
 
 # --- Environment Setup ---
 load_dotenv()
@@ -18,18 +21,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
 
 # --- Validations ---
-if not TELEGRAM_TOKEN:
-    print("Error: TELEGRAM_TOKEN environment variable not set.")
-    sys.exit(1)
-if not OPENAI_API_KEY:
-    print("Error: OPENAI_API_KEY environment variable not set.")
-    sys.exit(1)
-if not MONGO_URI:
-    print("Error: MONGO_URI environment variable not set.")
+if not all([TELEGRAM_TOKEN, OPENAI_API_KEY, MONGO_URI]):
+    print("Error: Missing one or more environment variables (TELEGRAM_TOKEN, OPENAI_API_KEY, MONGO_URI)")
     sys.exit(1)
 
 # --- Client Initializations ---
-# Create an asynchronous OpenAI client (New v1.x syntax)
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # --- Logging Setup ---
@@ -52,38 +48,38 @@ except Exception as e:
     sys.exit(1)
 
 # --- Data Functions (MongoDB implementation) ---
-def save_entry(user_id: str, content: str):
-    """Saves a new entry for a user in MongoDB."""
+def save_entry(user_id: str, content: str, category: str):
     entry = {
         "user_id": user_id,
         "content": content,
+        "category": category,
         "created_at": datetime.utcnow()
     }
     entries_collection.insert_one(entry)
 
-def get_user_entries(user_id: str, limit: int = 50):
-    """Retrieves entries for a user from MongoDB, sorted by date."""
+def get_user_entries(user_id: str, category: str, limit: int = 50):
+    return list(entries_collection.find({"user_id": user_id, "category": category}).sort("created_at", -1).limit(limit))
+
+def get_all_user_entries(user_id: str, limit: int = 10):
     return list(entries_collection.find({"user_id": user_id}).sort("created_at", -1).limit(limit))
 
 def delete_user_entries(user_id: str):
-    """Deletes all entries for a user from MongoDB."""
     result = entries_collection.delete_many({"user_id": user_id})
     return result.deleted_count
 
-# --- OpenAI Logic (Your original logic with updated API call) ---
-async def generate_ideas(user_entries: list) -> str:
-    """Generates ideas using OpenAI based on user history."""
+# --- OpenAI Logic ---
+async def generate_ideas(user_entries: list, category: str) -> str:
     if not user_entries:
-        return "אין לך עדיין רשומות במאגר. כתוב לי כמה דברים קודם!"
+        return f"אין לך עדיין רשומות בקטגוריית '{category}'. כתוב לי כמה דברים קודם!"
     
     entries_text = "\n".join([f"- {entry['content']}" for entry in user_entries[:20]])
     
     prompt = f"""
-אתה מכונת רעיונות חכמה. קיבלת את הדברים הבאים שמשתמש כתב:
+אתה מכונת רעיונות חכמה. קיבלת את הדברים הבאים שמשתמש כתב בקטגוריה '{category}':
 
 {entries_text}
 
-על בסיס הדברים שהוא כתב, הצע לו 3 רעיונות חדשים ומעניינים שמתאימים לסגנון שלו ולתחומי העניין שלו.
+על בסיס הדברים שהוא כתב, הצע לו 3 רעיונות חדשים ומעניינים שמתאימים לסגנון שלו ולתחומי העניין שלו, ספציפית בתחום של '{category}'.
 הרעיונות צריכים להיות:
 1. מעשיים ובני-ביצוע
 2. בסגנון שלו
@@ -93,14 +89,13 @@ async def generate_ideas(user_entries: list) -> str:
 """
 
     try:
-        # Use the new client and the '.create' method
         response = await openai_client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "אתה מכונת רעיונות חכמה שכותבת בעברית"},
+                {"role": "system", "content": f"אתה מכונת רעיונות חכמה שכותבת בעברית ומתמחה בתחום '{category}'."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=500,
+            max_tokens=1000,  # Increased token limit
             temperature=0.8
         )
         return response.choices[0].message.content.strip()
@@ -108,64 +103,60 @@ async def generate_ideas(user_entries: list) -> str:
         logger.error(f"Error calling OpenAI: {e}")
         return "סליחה, יש לי בעיה טכנית עם יצירת הרעיונות. נסה שוב מאוחר יותר."
 
-# --- Telegram Command Handlers (Your original logic) ---
+# --- Conversation Handler States ---
+CHOOSE_CATEGORY = range(1)
+
+# --- Telegram Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = """
 🧠 שלום! אני מכונת הרעיונות שלך!
 
 איך זה עובד?
-📝 כתוב לי כל דבר - רעיונות, מחשבות, פרויקטים. כל הודעה נשמרת.
-🎯 כשתכתוב /get_idea - אני אציע לך רעיונות חדשים בהתבסס על מה שכתבת.
+1️⃣ כתוב לי כל דבר - רעיון, מחשבה, פרויקט.
+2️⃣ אני אשאל אותך לאיזו קטגוריה לשייך את הרעיון: "יצירת בוטים" או "מדריכים".
+3️⃣ בקש רעיונות חדשים לפי קטגוריה!
 
 פקודות זמינות:
-/get_idea - קבל רעיונות חדשים
-/my_ideas - צפה בהיסטוריה שלך
-/clear_all - מחק את כל הנתונים שלך
-/help - הצג הודעה זו
+🤖 /idea_bots - קבל רעיונות ליצירת בוטים
+📖 /idea_guides - קבל רעיונות לכתיבת מדריכים
+📚 /my_ideas - צפה בהיסטוריה שלך
+🗑️ /clear_all - מחק את כל הנתונים שלך
+❓ /help - הצג הודעה זו
 
 בוא נתחיל! כתוב לי משהו...
 """
     await update.message.reply_text(welcome_message)
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_idea_by_category(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
     user_id = str(update.effective_user.id)
-    content = update.message.text
-    save_entry(user_id, content)
-    
-    count = entries_collection.count_documents({"user_id": user_id})
-    
-    responses = [
-        f"💾 נשמר! יש לך כבר {count} רשומות במאגר",
-        f"✅ קלט! {count} רשומות במאגר שלך",
-        f"📚 נוסף למאגר הרעיונות! ({count} רשומות בסך הכל)",
-        f"🎯 רשמתי! {count} פריטים במכונת הרעיונות שלך"
-    ]
-    response = responses[count % len(responses)]
-    await update.message.reply_text(response)
-
-async def get_idea_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    await update.message.reply_text("🤔 חושב על רעיונות בשבילך...")
-    entries = get_user_entries(user_id)
-    ideas = await generate_ideas(entries)
+    await update.message.reply_text(f"🤔 חושב על רעיונות בשבילך בקטגוריית '{category}'...")
+    entries = get_user_entries(user_id, category)
+    ideas = await generate_ideas(entries, category)
     await update.message.reply_text(f"💡 הנה הרעיונות שלך:\n\n{ideas}")
+
+async def idea_bots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await get_idea_by_category(update, context, category="יצירת בוטים")
+
+async def idea_guides_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await get_idea_by_category(update, context, category="מדריכים")
 
 async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    entries = get_user_entries(user_id, limit=10)
+    entries = get_all_user_entries(user_id, limit=10)
     
     if not entries:
         await update.message.reply_text("אין לך עדיין רשומות. כתוב לי משהו קודם!")
         return
     
-    message = "📚 10 הרשומות האחרונות שלך:\n\n"
+    message = "📚 10 הרשומות האחרונות שלך (מכל הקטגוריות):\n\n"
     for i, entry in enumerate(entries, 1):
         content = entry['content']
-        date_obj = entry['created_at'] # Already a datetime object
+        category = entry['category']
+        date_obj = entry['created_at']
         date_str = date_obj.strftime('%d/%m %H:%M')
         
-        short_content = content[:80] + "..." if len(content) > 80 else content
-        message += f"*{i}. {short_content}*\n📅 {date_str}\n\n"
+        short_content = content[:60] + "..." if len(content) > 60 else content
+        message += f"*{i}. {short_content}*\n*קטגוריה:* {category} | *תאריך:* {date_str}\n\n"
     
     await update.message.reply_text(message, parse_mode='Markdown')
 
@@ -179,45 +170,65 @@ async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("אין לך רשומות למחיקה")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = """
-🧠 מכונת הרעיונות - מדריך שימוש
+    await start(update, context) # The start message is a good help message
 
-איך זה עובד?
-1️⃣ כתוב לי כל דבר שעולה לך - רעיונות, מחשבות, פרויקטים
-2️⃣ כשתרצה רעיון חדש, כתוב /get_idea
-3️⃣ אני אנתח את מה שכתבת ואציע רעיונות שמתאימים לך
+# --- Conversation Logic for saving entries ---
+async def text_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start the conversation to categorize a new text entry."""
+    context.user_data['new_entry_content'] = update.message.text
+    reply_keyboard = [["יצירת בוטים", "מדריכים"]]
+    await update.message.reply_text(
+        "לאיזו קטגוריה לשייך את הרעיון הזה?",
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True),
+    )
+    return CHOOSE_CATEGORY
 
-פקודות:
-/get_idea - קבל רעיונות חדשים מבוססי ההיסטוריה שלך
-/my_ideas - צפה ב-10 הרשומות האחרונות שלך
-/clear_all - מחק את כל הנתונים שלך
-/help - הצג הודעה זו
+async def category_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle the category choice and save the entry."""
+    category = update.message.text
+    content = context.user_data.pop('new_entry_content', None)
+    user_id = str(update.effective_user.id)
 
-💡 טיפ: ככל שתכתוב לי יותר, הרעיונות יהיו יותר מדויקים ומותאמים אישית!
-"""
-    await update.message.reply_text(help_text)
+    if not content:
+        await update.message.reply_text("אופס, משהו השתבש. נסה לשלוח את הרעיון שוב.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    save_entry(user_id, content, category)
+    await update.message.reply_text(f"✅ רשמתי! הרעיון נשמר בקטגוריית '{category}'.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels and ends the conversation."""
+    await update.message.reply_text("הפעולה בוטלה.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
 
 # --- Flask Keep-Alive Server ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def health_check():
-    return "I'm alive!", 200
-
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    flask_app.run(host="0.0.0.0", port=port)
+def health_check(): return "I'm alive!", 200
+def run_flask(): flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
 # --- Main Application Setup ---
 def main() -> None:
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # Conversation handler for adding new entries
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, text_entry)],
+        states={
+            CHOOSE_CATEGORY: [MessageHandler(filters.Regex("^(יצירת בוטים|מדריכים)$"), category_choice)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_conversation)],
+    )
+    application.add_handler(conv_handler)
+
+    # Command Handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("get_idea", get_idea_command))
+    application.add_handler(CommandHandler("idea_bots", idea_bots_command))
+    application.add_handler(CommandHandler("idea_guides", idea_guides_command))
     application.add_handler(CommandHandler("my_ideas", show_my_ideas_command))
     application.add_handler(CommandHandler("clear_all", delete_all_command))
     application.add_handler(CommandHandler("help", help_command))
-    
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     logger.info("Starting bot polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
@@ -226,5 +237,4 @@ if __name__ == "__main__":
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
-    
     main()
