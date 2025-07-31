@@ -4,10 +4,10 @@ import sys
 from threading import Thread
 from datetime import datetime
 
-import openai
 from dotenv import load_dotenv
 from flask import Flask
 from pymongo import MongoClient
+from openai import AsyncOpenAI  # Updated import
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -28,7 +28,9 @@ if not MONGO_URI:
     print("Error: MONGO_URI environment variable not set.")
     sys.exit(1)
 
-openai.api_key = OPENAI_API_KEY
+# --- Client Initializations ---
+# Create an asynchronous OpenAI client (New v1.x syntax)
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -40,11 +42,10 @@ logger = logging.getLogger(__name__)
 
 # --- Database Setup (MongoDB) ---
 try:
-    client = MongoClient(MONGO_URI)
-    db = client.ideas_bot_db  # You can name your database whatever you want
-    entries_collection = db.user_entries # The collection to store entries
-    # The following line tests the connection.
-    client.admin.command('ping')
+    mongo_client = MongoClient(MONGO_URI)
+    db = mongo_client.ideas_bot_db
+    entries_collection = db.user_entries
+    mongo_client.admin.command('ping')
     logger.info("✅ Successfully connected to MongoDB.")
 except Exception as e:
     logger.error(f"❌ Could not connect to MongoDB: {e}")
@@ -69,7 +70,7 @@ def delete_user_entries(user_id: str):
     result = entries_collection.delete_many({"user_id": user_id})
     return result.deleted_count
 
-# --- OpenAI Logic (Your original logic) ---
+# --- OpenAI Logic (Your original logic with updated API call) ---
 async def generate_ideas(user_entries: list) -> str:
     """Generates ideas using OpenAI based on user history."""
     if not user_entries:
@@ -92,7 +93,8 @@ async def generate_ideas(user_entries: list) -> str:
 """
 
     try:
-        response = await openai.chat.completions.acreate(
+        # Use the new client and the '.create' method
+        response = await openai_client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "אתה מכונת רעיונות חכמה שכותבת בעברית"},
