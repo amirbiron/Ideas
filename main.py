@@ -13,6 +13,8 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, ContextTypes,
     ConversationHandler, CallbackQueryHandler
 )
+# --- Added import for the error handler ---
+from telegram.error import Conflict
 
 # --- Environment Setup ---
 load_dotenv()
@@ -35,6 +37,28 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger('werkzeug').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+# --- ✨ Custom Error Handler ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and send a telegram message to notify the developer."""
+    # Log the error before we do anything else, so we can see it even if something breaks.
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+    if isinstance(context.error, Conflict):
+        logger.warning("Conflict error detected. Another bot instance might be running.")
+        # No need to inform the user, as this is a backend issue.
+        return
+
+    # You can add more specific error handling here if needed
+    
+    # Finally, send a generic message to the user
+    try:
+        if isinstance(update, Update) and update.effective_chat:
+            text = "אופס, משהו השתבש. אני מתנצל, אבל לא הצלחתי לעבד את הבקשה האחרונה שלך. הצוות שלי קיבל על כך הודעה."
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+    except Exception as e:
+        logger.error(f"Failed to send error message to user: {e}", exc_info=e)
+
 
 # --- Database Setup (MongoDB) ---
 try:
@@ -71,10 +95,6 @@ async def generate_ideas(user_entries: list, category: str) -> str:
 אתה מכונת רעיונות חכמה. קיבלת את הדברים הבאים שמשתמש כתב בקטגוריה '{category}':
 {entries_text}
 על בסיס הדברים שהוא כתב, הצע לו 3 רעיונות חדשים ומעניינים שמתאימים לסגנון שלו ולתחומי העניין שלו, ספציפית בתחום של '{category}'.
-הרעיונות צריכים להיות:
-1. מעשיים ובני-ביצוע
-2. בסגנון שלו
-3. משהו שהוא עדיין לא עשה
 כתוב בעברית בצורה ידידותית וחמה.
 """
     try:
@@ -94,19 +114,24 @@ async def generate_ideas(user_entries: list, category: str) -> str:
 # --- Conversation Handler States ---
 CHOOSE_CATEGORY = range(1)
 
-# --- Main Menu ---
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-    # *** CHANGE 1: Added 'main_' prefix to callback_data ***
+# --- Keyboards ---
+def get_main_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton("🤖 בקש רעיון לבוט", callback_data='main_idea_bots')],
         [InlineKeyboardButton("📖 בקש רעיון למדריך", callback_data='main_idea_guides')],
         [InlineKeyboardButton("📚 הצג את הרעיונות שלי", callback_data='main_my_ideas')],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup(keyboard)
+
+def get_back_to_menu_keyboard():
+    keyboard = [[InlineKeyboardButton("⬅️ חזור לתפריט", callback_data='main_show_menu')]]
+    return InlineKeyboardMarkup(keyboard)
+
+# --- Menu Functions ---
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    reply_markup = get_main_menu_keyboard()
     if update.callback_query:
-        # Prevent "Message is not modified" error by checking content
-        if update.callback_query.message.text != text or update.callback_query.message.reply_markup != reply_markup:
-            await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
+        await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
     else:
         await update.message.reply_text(text, reply_markup=reply_markup)
 
@@ -122,7 +147,6 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer() 
     
-    # *** CHANGE 2: Remove 'main_' prefix to get the real command ***
     command = query.data.replace('main_', '')
     
     if command == 'idea_bots':
@@ -131,6 +155,8 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await get_idea_by_category(update, context, category="מדריכים")
     elif command == 'my_ideas':
         await show_my_ideas_command(update, context)
+    elif command == 'show_menu':
+        await show_main_menu(update, context, "תפריט ראשי:")
 
 # --- Command Logic ---
 async def get_idea_by_category(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
@@ -139,8 +165,7 @@ async def get_idea_by_category(update: Update, context: ContextTypes.DEFAULT_TYP
     await message.edit_text(f"🤔 חושב על רעיונות בשבילך בקטגוריית '{category}'...")
     entries = get_user_entries(user_id, category)
     ideas = await generate_ideas(entries, category)
-    await message.edit_text(f"💡 הנה הרעיונות שלך:\n\n{ideas}")
-    await show_main_menu(update, context, "מה עוד תרצה לעשות?")
+    await message.edit_text(f"💡 הנה הרעיונות שלך:\n\n{ideas}", reply_markup=get_back_to_menu_keyboard())
 
 async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -148,8 +173,7 @@ async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TY
     message = update.callback_query.message
     
     if not entries:
-        await message.edit_text("אין לך עדיין רשומות. כתוב לי משהו קודם!")
-        await show_main_menu(update, context, "מה תרצה לעשות כעת?")
+        await message.edit_text("אין לך עדיין רשומות. כתוב לי משהו קודם!", reply_markup=get_back_to_menu_keyboard())
         return
     
     text = "📚 10 הרשומות האחרונות שלך (מכל הקטגוריות):\n\n"
@@ -161,8 +185,7 @@ async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TY
         short_content = content[:60] + "..." if len(content) > 60 else content
         text += f"*{i}. {short_content}*\n*קטגוריה:* {category} | *תאריך:* {date_str}\n\n"
     
-    await message.edit_text(text, parse_mode='Markdown')
-    await show_main_menu(update, context, "מה עוד תרצה לעשות?")
+    await message.edit_text(text, parse_mode='Markdown', reply_markup=get_back_to_menu_keyboard())
 
 async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -189,17 +212,15 @@ async def category_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = str(update.effective_user.id)
 
     if not content:
-        await query.message.edit_text("אופס, משהו השתבש. נסה לשלוח את הרעיון שוב.")
+        await query.message.edit_text("אופס, משהו השתבש. נסה לשלוח את הרעיון שוב.", reply_markup=get_back_to_menu_keyboard())
         return ConversationHandler.END
 
     save_entry(user_id, content, category)
-    await query.message.edit_text(f"✅ רשמתי! הרעיון נשמר בקטגוריית '{category}'.")
-    await show_main_menu(update, context, "מה עוד תרצה לעשות?")
+    await query.message.edit_text(f"✅ רשמתי! הרעיון נשמר בקטגוריית '{category}'.", reply_markup=get_main_menu_keyboard())
     return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("הפעולה בוטלה.")
-    await show_main_menu(update, context, "תפריט ראשי:")
+    await show_main_menu(update, context, "הפעולה בוטלה. חוזר לתפריט הראשי:")
     return ConversationHandler.END
 
 # --- Flask Keep-Alive Server ---
@@ -212,6 +233,10 @@ def run_flask(): flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8
 def main() -> None:
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # --- Add the error handler ---
+    application.add_error_handler(error_handler)
+
+    # --- Add other handlers ---
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, text_entry)],
         states={
@@ -224,12 +249,10 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("clear_all", delete_all_command))
-    
-    # *** CHANGE 3: Added a specific pattern for the main menu handler ***
     application.add_handler(CallbackQueryHandler(button_click_handler, pattern='^main_'))
 
     logger.info("Starting bot polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
     flask_thread = Thread(target=run_flask)
