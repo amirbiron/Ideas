@@ -68,11 +68,22 @@ def save_entry(user_id: str, content: str, category: str):
     entry = {"user_id": user_id, "content": content, "category": category, "created_at": datetime.utcnow()}
     entries_collection.insert_one(entry)
 
-def get_user_entries(user_id: str, category: str, limit: int = 50):
-    return list(entries_collection.find({"user_id": user_id, "category": category}).sort("created_at", -1).limit(limit))
+def get_user_entries(user_id: str, category: str, limit: int = None):
+    query = {"user_id": user_id, "category": category}
+    cursor = entries_collection.find(query).sort("created_at", -1)
+    if limit:
+        cursor = cursor.limit(limit)
+    return list(cursor)
 
 def get_all_user_entries(user_id: str, limit: int = 10):
     return list(entries_collection.find({"user_id": user_id}).sort("created_at", -1).limit(limit))
+
+def get_user_entries_paginated(user_id: str, page: int = 0, per_page: int = IDEAS_PER_PAGE):
+    skip = page * per_page
+    return list(entries_collection.find({"user_id": user_id}).sort("created_at", -1).skip(skip).limit(per_page))
+
+def count_user_entries(user_id: str):
+    return entries_collection.count_documents({"user_id": user_id})
 
 def delete_user_entries(user_id: str):
     return entries_collection.delete_many({"user_id": user_id}).deleted_count
@@ -82,15 +93,31 @@ async def generate_ideas(user_entries: list, category: str) -> str:
     if not user_entries:
         return f"אין לך עדיין רשומות בקטגוריית '{category}'. כתוב לי כמה דברים קודם!"
     
-    entries_text = "\n".join([f"- {entry['content']}" for entry in user_entries[:20]])
-    prompt = f"על בסיס הרעיונות הבאים בקטגוריית '{category}':\n{entries_text}\n\nהצע 3 רעיונות חדשים, מעשיים ומקוריים באותו סגנון. כתוב בעברית ידידותית."
+    # משתמש בכל הרעיונות, לא רק ב-20 הראשונים
+    entries_text = "\n".join([f"- {entry['content']}" for entry in user_entries])
+    
+    # פרומפט משופר שמדגיש הישארות נאמן לסגנון
+    prompt = f"""על בסיס כל הרעיונות שלי בקטגוריית '{category}':
+
+{entries_text}
+
+אנא נתח את הסגנון, הטון, ואת סוג הרעיונות שאני כותב, והצע 3 רעיונות חדשים שמתאימים בדיוק לסגנון שלי.
+
+חשוב מאוד:
+- היצמד לסגנון הכתיבה שלי בדיוק
+- שמור על אותו רמת פירוט ומורכבות
+- השתמש באותו סוג מילים וביטויים
+- הרעיונות צריכים להרגיש כאילו אני כתבתי אותם
+
+כתוב 3 רעיونות בעברית ידידותית."""
+
     try:
         response = await openai_client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": f"אתה מכונת רעיונות חכמה שכותבת בעברית ומתמחה בתחום '{category}'."},
+                {"role": "system", "content": f"אתה מומחה בחיקוי סגנון כתיבה. המשימה שלך היא לנתח את סגנון הכתיבה של המשתמש בתחום '{category}' ולייצר רעיונות חדשים שמתאימים בדיוק לסגנון שלו - אותו טון, אותה רמת פירוט, ואותו סוג רעיונות."},
                 {"role": "user", "content": prompt}
-            ], max_tokens=1000, temperature=0.8
+            ], max_tokens=1200, temperature=0.7
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -99,6 +126,9 @@ async def generate_ideas(user_entries: list, category: str) -> str:
 
 # --- Conversation Handler States ---
 CHOOSE_CATEGORY, AWAITING_IDEAS, CHOOSE_CATEGORY_FOR_LIST = range(3)
+
+# --- Pagination Constants ---
+IDEAS_PER_PAGE = 10
 
 # --- Keyboards ---
 def get_main_menu_keyboard():
@@ -112,6 +142,26 @@ def get_main_menu_keyboard():
 
 def get_back_to_menu_keyboard():
     keyboard = [[InlineKeyboardButton("⬅️ חזור לתפריט", callback_data='main_show_menu')]]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_pagination_keyboard(current_page: int, total_pages: int, has_next: bool, has_prev: bool):
+    keyboard = []
+    
+    # שורה של כפתורי ניווט
+    nav_row = []
+    if has_prev:
+        nav_row.append(InlineKeyboardButton("⬅️ הקודם", callback_data=f'page_{current_page - 1}'))
+    
+    nav_row.append(InlineKeyboardButton(f"עמוד {current_page + 1} מתוך {total_pages}", callback_data='page_info'))
+    
+    if has_next:
+        nav_row.append(InlineKeyboardButton("הבא ➡️", callback_data=f'page_{current_page + 1}'))
+    
+    keyboard.append(nav_row)
+    
+    # כפתור חזרה לתפריט
+    keyboard.append([InlineKeyboardButton("⬅️ חזור לתפריט", callback_data='main_show_menu')])
+    
     return InlineKeyboardMarkup(keyboard)
 
 def get_category_keyboard():
@@ -141,6 +191,18 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer() 
     
+    # טיפול בכפתורי ניווט עמודים
+    if query.data.startswith('page_'):
+        page_data = query.data.replace('page_', '')
+        if page_data == 'info':
+            return  # לא לעשות כלום אם לוחצים על מידע העמוד
+        try:
+            page = int(page_data)
+            await show_my_ideas_command(update, context, page)
+            return
+        except ValueError:
+            pass
+    
     command = query.data.replace('main_', '')
     
     if command == 'idea_bots':
@@ -161,17 +223,25 @@ async def get_idea_by_category(update: Update, context: ContextTypes.DEFAULT_TYP
     ideas = await generate_ideas(entries, category)
     await message.edit_text(f"💡 הנה הרעיונות שלך:\n\n{ideas}", reply_markup=get_back_to_menu_keyboard())
 
-async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
     user_id = str(update.effective_user.id)
-    entries = get_all_user_entries(user_id, limit=10)
-    message = update.callback_query.message
+    total_entries = count_user_entries(user_id)
     
-    if not entries:
+    if total_entries == 0:
+        message = update.callback_query.message if update.callback_query else update.message
         await message.edit_text("אין לך עדיין רשומות. כתוב לי משהו קודם!", reply_markup=get_back_to_menu_keyboard())
         return
     
-    text = "📚 10 הרשומות האחרונות שלך:\n\n"
-    for i, entry in enumerate(entries, 1):
+    entries = get_user_entries_paginated(user_id, page, IDEAS_PER_PAGE)
+    total_pages = (total_entries + IDEAS_PER_PAGE - 1) // IDEAS_PER_PAGE
+    
+    has_next = page < total_pages - 1
+    has_prev = page > 0
+    
+    text = f"📚 הרעיונות שלך (עמוד {page + 1} מתוך {total_pages}):\n\n"
+    
+    start_index = page * IDEAS_PER_PAGE + 1
+    for i, entry in enumerate(entries, start_index):
         content = entry['content']
         category = entry.get('category', 'ללא קטגוריה') 
         date_obj = entry['created_at']
@@ -179,7 +249,12 @@ async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TY
         short_content = content[:60] + "..." if len(content) > 60 else content
         text += f"*{i}. {short_content}*\n*קטגוריה:* {category} | *תאריך:* {date_str}\n\n"
     
-    await message.edit_text(text, parse_mode='Markdown', reply_markup=get_back_to_menu_keyboard())
+    text += f"\n📊 סך הכל: {total_entries} רעיונות"
+    
+    reply_markup = get_pagination_keyboard(page, total_pages, has_next, has_prev)
+    
+    message = update.callback_query.message if update.callback_query else update.message
+    await message.edit_text(text, parse_mode='Markdown', reply_markup=reply_markup)
 
 async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
