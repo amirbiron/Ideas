@@ -1,21 +1,6 @@
 # Configuration constants
 IDEAS_PER_PAGE = 10
 
-# Configuration constants
-IDEAS_PER_PAGE = 10
-
-# Configuration constants
-IDEAS_PER_PAGE = 10
-
-# Configuration constants
-IDEAS_PER_PAGE = 10
-
-# Configuration constants
-IDEAS_PER_PAGE = 10
-
-# Configuration constants
-IDEAS_PER_PAGE = 10
-
 import logging
 import os
 import sys
@@ -119,26 +104,26 @@ async def generate_ideas(user_entries: list, category: str) -> str:
 
 {entries_text}
 
-אנא נתח את הסגנון, הטון, ואת סוג הרעיונות שאני כותב, והצע 3 רעיונות חדשים שמתאימים בדיוק לסגנון שלי.
+אנא נתח את הסגנון, הטון, ואת סוג הרעיונות שאני כותב, והצע 15 רעיונות חדשים שמתאימים בדיוק לסגנון שלי.
 
 חשוב מאוד:
 - היצמד לסגנון הכתיבה שלי בדיוק
 - שמור על אותו רמת פירוט ומורכבות
 - השתמש באותו סוג מילים וביטויים
 - הרעיונות צריכים להרגיש כאילו אני כתבתי אותם
-- כתוב בפורמט רשימה ממוספרת: 1. 2. 3.
+- כתוב בפורמט רשימה ממוספרת: 1. 2. 3. ... 15.
 - הוסף מעבר שורה בין כל רעיון
-- אל תכתוב הקדמות או הסברים, רק את 3 הרעיונות הממוספרים
+- אל תכתוב הקדמות או הסברים, רק את 15 הרעיונות הממוספרים
 
-כתוב 3 רעיונות בעברית ידידותית."""
+כתוב 15 רעיונות בעברית ידידותית."""
 
     try:
         response = await openai_client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": f"אתה מומחה בחיקוי סגנון כתיבה. המשימה שלך היא לנתח את סגנון הכתיבה של המשתמש בתחום '{category}' ולייצר רעיונות חדשים שמתאימים בדיוק לסגנון שלו - אותו טון, אותה רמת פירוט, ואותו סוג רעיונות. חשוב: תמיד כתוב בפורמט רשימה ממוספרת (1. 2. 3.) עם מעבר שורה בין רעיונות, ללא הקדמות או הסברים."},
+                {"role": "system", "content": f"אתה מומחה בחיקוי סגנון כתיבה. המשימה שלך היא לנתח את סגנון הכתיבה של המשתמש בתחום '{category}' ולייצר רעיונות חדשים שמתאימים בדיוק לסגנון שלו - אותו טון, אותה רמת פירוט, ואותו סוג רעיונות. חשוב: תמיד כתוב בפורמט רשימה ממוספרת (1. 2. 3. ... 15.) עם מעבר שורה בין רעיונות, ללא הקדמות או הסברים."},
                 {"role": "user", "content": prompt}
-            ], max_tokens=1200, temperature=0.7
+            ], max_tokens=2500, temperature=0.7
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
