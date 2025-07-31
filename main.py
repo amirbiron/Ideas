@@ -1,249 +1,186 @@
-import os
-import sqlite3
 import logging
-from datetime import datetime
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import openai
-import asyncio
+import os
+import random
+import sys
+from functools import partial
+from threading import Thread
 
-# הגדרת לוגים
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+from dotenv import load_dotenv
+from flask import Flask
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+# --- Environment Setup ---
+# Load environment variables from .env file, if it exists
+load_dotenv()
+
+# Get environment variables
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+ADMIN_ID = os.getenv("ADMIN_ID")
+
+# Check for mandatory environment variables
+if not TELEGRAM_TOKEN:
+    print("Error: TELEGRAM_TOKEN environment variable not set.")
+    sys.exit(1)
+if not ADMIN_ID:
+    print("Warning: ADMIN_ID environment variable not set. Admin commands will not be secured.")
+else:
+    try:
+        ADMIN_ID = int(ADMIN_ID)
+    except ValueError:
+        print("Error: ADMIN_ID must be a valid integer.")
+        sys.exit(1)
+
+# --- Logging Setup ---
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# הגדרת API keys
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-openai.api_key = OPENAI_API_KEY
+# --- Flask Keep-Alive Server ---
+# This is a simple web server to keep the Render service alive on the free tier.
+flask_app = Flask(__name__)
 
-class IdeasBot:
-    def __init__(self):
-        self.init_database()
-    
-    def init_database(self):
-        """יצירת מסד נתונים SQLite"""
-        conn = sqlite3.connect('ideas_bot.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        conn.commit()
-        conn.close()
-    
-    def save_entry(self, user_id: str, content: str):
-        """שמירת רשומה חדשה"""
-        conn = sqlite3.connect('ideas_bot.db')
-        cursor = conn.cursor()
-        cursor.execute(
-            'INSERT INTO entries (user_id, content) VALUES (?, ?)',
-            (user_id, content)
-        )
-        conn.commit()
-        conn.close()
-    
-    def get_user_entries(self, user_id: str, limit: int = 50):
-        """שליפת כל הרשומות של משתמש"""
-        conn = sqlite3.connect('ideas_bot.db')
-        cursor = conn.cursor()
-        cursor.execute(
-            'SELECT content, created_at FROM entries WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
-            (user_id, limit)
-        )
-        entries = cursor.fetchall()
-        conn.close()
-        return entries
-    
-    def delete_user_entries(self, user_id: str):
-        """מחיקת כל הרשומות של משתמש"""
-        conn = sqlite3.connect('ideas_bot.db')
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM entries WHERE user_id = ?', (user_id,))
-        deleted_count = cursor.rowcount
-        conn.commit()
-        conn.close()
-        return deleted_count
-    
-    async def generate_ideas(self, user_entries: list) -> str:
-        """יצירת רעיונות באמצעות OpenAI"""
-        if not user_entries:
-            return "אין לך עדיין רשומות במאגר. כתב לי כמה דברים קודם!"
-        
-        # הכנת הטקסט לשליחה ל-OpenAI
-        entries_text = "\n".join([f"- {entry[0]}" for entry in user_entries[:20]])  # רק 20 האחרונות
-        
-        prompt = f"""
-אתה מכונת רעיונות חכמה. קיבלת את הדברים הבאים שמשתמש כתב:
+@flask_app.route('/')
+def health_check():
+    """A simple endpoint to confirm the web server is running."""
+    return "I'm alive!", 200
 
-{entries_text}
+def run_flask():
+    """Runs the Flask web server."""
+    # The port is dynamically assigned by Render.
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port)
 
-על בסיס הדברים שהוא כתב, הצע לו 3 רעיונות חדשים ומעניינים שמתאימים לסגנון שלו ולתחומי העניין שלו.
-הרעיונות צריכים להיות:
-1. מעשיים ובני-ביצוע
-2. בסגנון שלו
-3. משהו שהוא עדיין לא עשה
+# --- Bot Logic ---
+ideas = [
+    "פיתוח אפליקציה לניהול מתכונים משפחתיים.",
+    "יצירת בוט טלגרם שמסכם מאמרים ארוכים.",
+    "בניית אתר אינטרנט לקהילת חובבי גינון אורבני.",
+    "פיתוח משחק מובייל פשוט מבוסס פאזלים.",
+    "יצירת פלטפורמה להחלפת ספרים משומשים.",
+    "כתיבת סקריפט לאוטומציה של משימות חוזרות במחשב.",
+    "פיתוח מערכת לניהול תקציב אישי עם התראות חכמות.",
+    "בניית אתר פורטפוליו אישי להצגת פרויקטים.",
+    "יצירת תוסף לדפדפן שמסיר פרסומות מסיחות דעת.",
+    "פיתוח אפליקציית מדיטציה עם קולות טבע מרגיעים.",
+    "בניית לוח מודעות וירטואלי לשכונה.",
+    "יצירת בוט שמנטר מחירים של מוצרים באינטרנט.",
+    "פיתוח פלטפורמה ללימוד שפה חדשה באמצעות שיחות וידאו.",
+    "בניית מערכת המלצות לסרטים וסדרות מבוססת AI.",
+    "יצירת אפליקציה למעקב אחר אימוני כושר אישיים.",
+    "פיתוח כלי לניהול משימות ופרויקטים בקבוצות קטנות.",
+    "בניית אתר להזמנת אוכל ממסעדות מקומיות קטנות.",
+    "יצירת מחולל סיפורים קצרים רנדומלי.",
+    "פיתוח אפליקציה לזיהוי צמחים ופרחים באמצעות המצלמה.",
+    "בניית פלטפורמה לחיבור בין מתנדבים לעמותות.",
+    "יצירת בוט שמספק ציטוטים מעוררי השראה כל בוקר.",
+    "פיתוח מערכת לניהול מלאי לעסקים קטנים.",
+    "בניית אתר המרכז אירועים ופעילויות לילדים באזור מסוים.",
+    "יצירת אפליקציה ללימוד נגינה על כלי בסיסי כמו יוקלילי.",
+    "פיתוח פלטפורמה למציאת שותפים לטיולים ופעילויות ספורט.",
+    "בניית בוט שמלמד עובדות מעניינות כל יום.",
+    "יצירת כלי אונליין להמרת קבצים בין פורמטים שונים.",
+    "פיתוח אפליקציה למעקב אחר צריכת מים יומית.",
+    "בניית אתר המאפשר למשתמשים ליצור ולשתף רשימות השמעה.",
+    "יצירת בוט שמזכיר למשתמשים לקחת הפסקות קצרות מהעבודה.",
+    "פיתוח מערכת להזמנת תורים אונליין לעסקים קטנים (ספרים, קוסמטיקאיות).",
+    "בניית פלטפורמה לחיבור בין מורים פרטיים לתלמידים.",
+    "יצירת אפליקציה שמציעה מסלולי טיול רגליים בטבע.",
+    "פיתוח בוט שמספק עדכוני חדשות מסוננים לפי תחומי עניין.",
+    "בניית אתר להשוואת מחירים בין סופרמרקטים.",
+    "יצירת כלי ליצירת קורות חיים מקצועיים אונליין.",
+    "פיתוח אפליקציית יומן אישי דיגיטלי עם אפשרויות אבטחה.",
+    "בניית פלטפורמה לשיתוף כישרונות בין חברים (למשל, שיעור בישול תמורת תיקון מחשב).",
+    "יצירת בוט שמסייע בתרגול אוצר מילים לשפה זרה.",
+    "פיתוח אתר המרכז מידע על אימוץ חיות מחמד.",
+    "בניית אפליקציה פשוטה לרישום הוצאות והכנסות.",
+    "יצירת בוט שמספר בדיחות.",
+    "פיתוח פלטפורמה לניהול ועדי בית.",
+    "בניית אתר שמציג מתכונים לפי מרכיבים שיש בבית.",
+    "יצירת כלי אונליין ליצירת סקרים ושאלונים מהירים.",
+    "פיתוח אפליקציה לניהול רשימת קניות משותפת.",
+    "בניית בוט שמספק מידע על תחבורה ציבורית בזמן אמת.",
+    "יצירת פלטפורמה ללימוד קורסים קצרים אונליין (בסגנון Skillshare).",
+    "פיתוח אתר המאפשר למצוא שותפים לדירה.",
+    "יצירת בוט שמזכיר על ימי הולדת ואירועים חשובים."
+]
 
-כתב בעברית בצורה ידידותית וחמה.
-"""
-
-        try:
-            response = await openai.ChatCompletion.acreate(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "אתה מכונת רעיונות חכמה שכותבת בעברית"},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=500,
-                temperature=0.8
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"שגיאה בקריאה ל-OpenAI: {e}")
-            return "סליחה, יש לי בעיה טכנית עם יצירת הרעיונות. נסה שוב מאוחר יותר."
-
-# יצירת מופע של הבוט
-ideas_bot = IdeasBot()
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """פקודת /start"""
-    welcome_message = """
-🧠 שלום! אני מכונת הרעיונות שלך!
-
-איך זה עובד?
-📝 כתב לי כל דבר - רעיונות, מחשבות, פרויקטים
-🎯 כשתכתב /איןלי - אני אציע לך רעיונות חדשים בהתבסס על מה שכתבת
-
-פקודות זמינות:
-/איןלי - קבל רעיונות חדשים
-/הרעיונותשלי - צפה בהיסטוריה שלך
-/מחקהכל - מחק את כל הנתונים שלך
-/עזרה - הצג הודעה זו
-
-בוא נתחיל! כתב לי משהו...
-"""
-    await update.message.reply_text(welcome_message)
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """טיפול בהודעות טקסט רגילות"""
-    user_id = str(update.effective_user.id)
-    content = update.message.text
-    
-    # שמירת ההודעה
-    ideas_bot.save_entry(user_id, content)
-    
-    # מספר רשומות של המשתמש
-    entries = ideas_bot.get_user_entries(user_id)
-    count = len(entries)
-    
-    responses = [
-        f"💾 נשמר! יש לך כבר {count} רשומות במאגר",
-        f"✅ קלט! {count} רשומות במאגר שלך",
-        f"📚 נוסף למאגר הרעיונות! ({count} רשומות בסך הכל)",
-        f"🎯 רשמתי! {count} פריטים במכונת הרעיונות שלך"
-    ]
-    
-    response = responses[count % len(responses)]
-    await update.message.reply_text(response)
-
-async def get_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """פקודת /איןלי"""
-    user_id = str(update.effective_user.id)
-    
-    await update.message.reply_text("🤔 חושב על רעיונות בשבילך...")
-    
-    # שליפת רשומות המשתמש
-    entries = ideas_bot.get_user_entries(user_id)
-    
-    # יצירת רעיונות
-    ideas = await ideas_bot.generate_ideas(entries)
-    
-    await update.message.reply_text(f"💡 הנה הרעיונות שלך:\n\n{ideas}")
-
-async def show_my_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """פקודת /הרעיונותשלי"""
-    user_id = str(update.effective_user.id)
-    entries = ideas_bot.get_user_entries(user_id, limit=10)
-    
-    if not entries:
-        await update.message.reply_text("אין לך עדיין רשומות. כתב לי משהו קודם!")
-        return
-    
-    message = "📚 הרשומות האחרונות שלך:\n\n"
-    for i, (content, created_at) in enumerate(entries, 1):
-        # המרת תאריך
-        date_obj = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-        date_str = date_obj.strftime('%d/%m %H:%M')
-        
-        # קיצור הטקסט אם הוא ארוך
-        short_content = content[:80] + "..." if len(content) > 80 else content
-        message += f"{i}. {short_content}\n📅 {date_str}\n\n"
-    
-    await update.message.reply_text(message)
-
-async def delete_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """פקודת /מחקהכל"""
-    user_id = str(update.effective_user.id)
-    deleted_count = ideas_bot.delete_user_entries(user_id)
-    
-    if deleted_count > 0:
-        await update.message.reply_text(f"🗑️ נמחקו {deleted_count} רשומות מהמאגר שלך")
-    else:
-        await update.message.reply_text("אין לך רשומות למחיקה")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """פקודת /עזרה"""
-    help_text = """
-🧠 מכונת הרעיונות - מדריך שימוש
-
-איך זה עובד?
-1️⃣ כתב לי כל דבר שעולה לך - רעיונות, מחשבות, פרויקטים
-2️⃣ כשתרצה רעיון חדש, כתב /איןלי
-3️⃣ אני אנתח את מה שכתבת ואציע רעיונות שמתאימים לך
-
-פקודות:
-/איןלי - קבל רעיונות חדשים מבוססי ההיסטוריה שלך
-/הרעיונותשלי - צפה ב-10 הרשומות האחרונות שלך
-/מחקהכל - מחק את כל הנתונים שלך
-/עזרה - הצג הודעה זו
-
-💡 טיפ: ככל שתכתב לי יותר, הרעיונות יהיו יותר מדויקים ומותאמים אישית!
-"""
-    await update.message.reply_text(help_text)
-
-def main():
-    """הפעלת הבוט"""
-    if not TELEGRAM_TOKEN:
-        logger.error("TELEGRAM_TOKEN לא הוגדר!")
-        return
-    
-    # יצירת האפליקציה
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # הוספת handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("איןלי", get_ideas))
-    application.add_handler(CommandHandler("הרעיונותשלי", show_my_ideas))
-    application.add_handler(CommandHandler("מחקהכל", delete_all))
-    application.add_handler(CommandHandler("עזרה", help_command))
-    application.add_handler(CommandHandler("help", help_command))
-    
-    # טיפול בהודעות טקסט (לא פקודות)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    
-    # הפעלה
-    port = int(os.environ.get('PORT', 8080))
-    logger.info(f"מתחיל בוט על פורט {port}")
-    
-    # לרנדר - webhook
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        webhook_url=f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'your-app-name.onrender.com')}/{TELEGRAM_TOKEN}"
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sends a welcome message when the /start command is issued."""
+    user = update.effective_user
+    welcome_message = (
+        f"שלום {user.mention_html()}!\n\n"
+        "אני בוט הרעיונות שלך.\n"
+        "אין לך רעיון מה לפתח? פשוט תגיד לי!\n"
+        "שלח לי /get_idea ואתן לך רעיון אקראי לפרויקט הבא שלך."
     )
+    await update.message.reply_html(welcome_message)
 
-if __name__ == '__main__':
+async def get_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sends a random idea from the list."""
+    # Choose a random idea
+    random_idea = random.choice(ideas)
+    
+    # Prepare the message
+    message = f"הנה רעיון בשבילך:\n\n💡 *{random_idea}*"
+    
+    # Send the message with MarkdownV2 formatting
+    await update.message.reply_text(message, parse_mode='MarkdownV2')
+
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to show bot statistics. (Placeholder)"""
+    # Security check: only the admin can use this command
+    if str(update.effective_user.id) != str(ADMIN_ID):
+        await update.message.reply_text("מצטער, הפקודה הזו מיועדת למנהל המערכת בלבד.")
+        return
+
+    # In a real bot, you would fetch this from a database.
+    # For now, it's just a placeholder.
+    user_count = "לא מחובר למסד נתונים" 
+    await update.message.reply_text(f"סטטיסטיקות הבוט:\nמשתמשים רשומים: {user_count}")
+
+# --- Helper function for error handling ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and send a telegram message to notify the developer."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
+    # Optionally, notify the admin about the error
+    # This part is commented out to avoid spamming, but can be enabled for production.
+    # if ADMIN_ID:
+    #     error_message = f"An error occurred: {context.error}"
+    #     await context.bot.send_message(chat_id=ADMIN_ID, text=error_message)
+
+# --- Main Application Setup ---
+def main() -> None:
+    """Start the bot."""
+    # Create the Application and pass it your bot's token.
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # --- Register command handlers ---
+    # on different commands - answer in Telegram
+    application.add_handler(CommandHandler("start", start))
+    
+    # This is the corrected command
+    application.add_handler(CommandHandler("get_idea", get_ideas))
+    
+    application.add_handler(CommandHandler("stats", admin_stats))
+    
+    # --- Register error handler ---
+    application.add_error_handler(error_handler)
+
+    # --- Start the Bot ---
+    # Run the bot until the user presses Ctrl-C
+    logger.info("Starting bot polling...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    # Start the Flask server in a separate thread
+    # This is the "keep-alive" trick for Render's free tier
+    flask_thread = Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
+    # Start the bot's main function
     main()
