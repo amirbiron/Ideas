@@ -239,9 +239,7 @@ async def get_idea_by_category(update: Update, context: ContextTypes.DEFAULT_TYP
     await message.edit_text(f"🤔 חושב על רעיונות בשבילך בקטגוריית '{category}'...", reply_markup=None)
     entries = get_user_entries(user_id, category)
     ideas = await generate_ideas(entries, category)
-    await message.edit_text(f"💡 הנה הרעיונות שלך:
-
-{ideas}", reply_markup=get_back_to_menu_keyboard())
+    await message.edit_text(f"💡 הנה הרעיונות שלך:\n\n{ideas}", reply_markup=get_back_to_menu_keyboard())
 
 async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
     user_id = str(update.effective_user.id)
@@ -258,9 +256,7 @@ async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TY
     has_next = page < total_pages - 1
     has_prev = page > 0
     
-    text = f"📚 הרעיונות שלך (עמוד {page + 1} מתוך {total_pages}):
-
-"
+    text = f"📚 הרעיונות שלך (עמוד {page + 1} מתוך {total_pages}):\n\n"
     
     start_index = page * IDEAS_PER_PAGE + 1
     for i, entry in enumerate(entries, start_index):
@@ -269,13 +265,10 @@ async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TY
         date_obj = entry['created_at']
         date_str = date_obj.strftime('%d/%m %H:%M')
         short_content = content[:60] + "..." if len(content) > 60 else content
-        text += f"*{i}. {short_content}*
-*קטגוריה:* {category} | *תאריך:* {date_str}
-
-"
+        text += (f"*{i}. {short_content}*\n"
+                 f"*קטגוריה:* {category} | *תאריך:* {date_str}\n\n")
     
-    text += f"
-📊 סך הכל: {total_entries} רעיונות"
+    text += f"\n📊 סך הכל: {total_entries} רעיונות"
     
     reply_markup = get_pagination_keyboard(page, total_pages, has_next, has_prev)
     
@@ -317,8 +310,8 @@ async def start_list_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     await query.answer()
     context.user_data['idea_list'] = []
-    await query.message.edit_text("מעולה. שלח לי את הרעיונות שלך, **כל אחד בהודעה נפרדת**.
-כשתסיים, שלח את הפקודה /done.", parse_mode='Markdown')
+    await query.message.edit_text("מעולה. שלח לי את הרעיונות שלך, **כל אחד בהודעה נפרדת**.\n"
+                                   "כשתסיים, שלח את הפקודה /done.", parse_mode='Markdown')
     return AWAITING_IDEAS
 
 async def add_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
