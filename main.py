@@ -36,7 +36,8 @@ def create_lock():
                 logger.error(f"🔒 Bot already running (PID: {old_pid}). Exiting.")
                 sys.exit(1)
             else:
-                logger.warning("⚠️ Stale lock file found for a non-running process. Overwriting.")
+                logger.warning("⚠️ Stale lock file found. Waiting 5 seconds before overwriting...")
+                time.sleep(5)  # Give Telegram time to timeout the old connection
         except (ValueError, FileNotFoundError):
              logger.warning("⚠️ Lock file is invalid. Overwriting.")
 
