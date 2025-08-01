@@ -1,5 +1,90 @@
 # Configuration constants
 IDEAS_PER_PAGE = 10
+import os
+import sys
+import atexit
+import logging
+
+# --- Start of Lock File Code ---
+
+# Configure logging to see lock file messages
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+LOCK_FILE_PATH = "bot.lock"
+
+def check_lock():
+    """Check if a lock file exists and if the process is still running."""
+    if os.path.exists(LOCK_FILE_PATH):
+        try:
+            with open(LOCK_FILE_PATH, 'r') as f:
+                pid = int(f.read().strip())
+            
+            # Check if the process with the stored PID is running
+            # On Unix-like systems (like Render), os.kill(pid, 0) will raise
+            # ProcessLookupError if the process doesn't exist.
+            os.kill(pid, 0)
+            logger.info(f"Lock file found for a running process (PID: {pid}). Another instance is active. Exiting.")
+            sys.exit(1) # Exit if process is still running
+        except (ProcessLookupError, ValueError, FileNotFoundError):
+            # The process is not running, or the lock file is invalid/stale. Remove it.
+            logger.warning("Stale lock file found. Removing it.")
+            os.remove(LOCK_FILE_PATH)
+        except Exception as e:
+            logger.error(f"An unexpected error occurred while checking the lock file: {e}")
+            sys.exit(1)
+
+
+def create_lock_file():
+    """Create the lock file and write the current PID into it."""
+    try:
+        with open(LOCK_FILE_PATH, 'w') as f:
+            f.write(str(os.getpid()))
+        logger.info(f"Lock file created at {LOCK_FILE_PATH} with PID: {os.getpid()}")
+    except IOError as e:
+        logger.error(f"Failed to create lock file: {e}")
+        sys.exit(1)
+
+def remove_lock_file():
+    """Remove the lock file upon exit."""
+    try:
+        if os.path.exists(LOCK_FILE_PATH):
+            os.remove(LOCK_FILE_PATH)
+            logger.info("Lock file removed.")
+    except IOError as e:
+        logger.warning(f"Could not remove lock file on exit: {e}")
+
+# --- Main Logic ---
+
+# 1. Check for and handle existing lock file
+check_lock()
+
+# 2. Create a new lock file for this instance
+create_lock_file()
+
+# 3. Register the cleanup function to run on exit
+atexit.register(remove_lock_file)
+
+# --- End of Lock File Code ---
+
+
+# ===============================================================
+# Your existing bot code starts here.
+# For example:
+#
+# from telegram.ext import Application
+#
+# def main() -> None:
+#     """Start the bot."""
+#     application = Application.builder().token("YOUR_TOKEN_HERE").build()
+#     # ... add your handlers, etc.
+#     application.run_polling()
+#
+# if __name__ == "__main__":
+#     logger.info("Bot is starting up...")
+#     main()
+# ===============================================================
+
 
 import logging
 import os
