@@ -290,18 +290,6 @@ def get_category_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# --- Activity Tracking Function ---
-def record_user_activity(update: Update):
-    """Records user activity for all incoming messages"""
-    try:
-        activity_tracker.record_bot_usage(
-            service_id="srv-d26cf32dbo4c73f27de0",        # מזהה השירות מרנדר
-            user_id=update.effective_user.id,              # מזהה המשתמש ששלח
-            service_name="Ideas"                           # שם הבוט למעקב
-        )
-    except Exception as e:
-        logger.error(f"Error recording user activity: {e}")
-
 # --- Menu Functions ---
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     reply_markup = get_main_menu_keyboard()
@@ -311,17 +299,29 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
         await update.message.reply_text(text, reply_markup=reply_markup)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    record_user_activity(update)
+    activity_tracker.record_bot_usage(
+        service_id="srv-d26cf32dbo4c73f27de0",
+        user_id=update.effective_user.id,
+        service_name="Ideas"
+    )
     welcome_text = "שלום! אני מכונת הרעיונות שלך. תוכל לכתוב לי רעיון או להשתמש בתפריט:"
     await show_main_menu(update, context, welcome_text)
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    record_user_activity(update)
+    activity_tracker.record_bot_usage(
+        service_id="srv-d26cf32dbo4c73f27de0",
+        user_id=update.effective_user.id,
+        service_name="Ideas"
+    )
     await show_main_menu(update, context, "תפריט ראשי:")
 
 # --- Button Click (CallbackQuery) Handler ---
 async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    record_user_activity(update)
+    activity_tracker.record_bot_usage(
+        service_id="srv-d26cf32dbo4c73f27de0",
+        user_id=update.effective_user.id,
+        service_name="Ideas"
+    )
     query = update.callback_query
     await query.answer() 
     
@@ -405,20 +405,32 @@ async def show_my_ideas_command(update: Update, context: ContextTypes.DEFAULT_TY
     await message.edit_text(text, parse_mode='Markdown', reply_markup=reply_markup)
 
 async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    record_user_activity(update)
+    activity_tracker.record_bot_usage(
+        service_id="srv-d26cf32dbo4c73f27de0",
+        user_id=update.effective_user.id,
+        service_name="Ideas"
+    )
     user_id = str(update.effective_user.id)
     deleted_count = delete_user_entries(user_id)
     await update.message.reply_text(f"🗑️ נמחקו {deleted_count} רשומות.")
 
 # --- Single Entry Conversation ---
 async def text_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    record_user_activity(update)
+    activity_tracker.record_bot_usage(
+        service_id="srv-d26cf32dbo4c73f27de0",
+        user_id=update.effective_user.id,
+        service_name="Ideas"
+    )
     context.user_data['new_entry_content'] = update.message.text
     await update.message.reply_text("לאיזו קטגוריה לשייך את הרעיון?", reply_markup=get_category_keyboard())
     return CHOOSE_CATEGORY
 
 async def category_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    record_user_activity(update)
+    activity_tracker.record_bot_usage(
+        service_id="srv-d26cf32dbo4c73f27de0",
+        user_id=update.effective_user.id,
+        service_name="Ideas"
+    )
     query = update.callback_query
     await query.answer()
     category = query.data.split('_')[1]
@@ -433,14 +445,22 @@ async def category_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    record_user_activity(update)
+    activity_tracker.record_bot_usage(
+        service_id="srv-d26cf32dbo4c73f27de0",
+        user_id=update.effective_user.id,
+        service_name="Ideas"
+    )
     context.user_data.clear()
     await update.message.reply_text("הפעולה בוטלה.", reply_markup=get_main_menu_keyboard())
     return ConversationHandler.END
 
 # --- List Entry Conversation ---
 async def start_list_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    record_user_activity(update)
+    activity_tracker.record_bot_usage(
+        service_id="srv-d26cf32dbo4c73f27de0",
+        user_id=update.effective_user.id,
+        service_name="Ideas"
+    )
     query = update.callback_query
     await query.answer()
     context.user_data['idea_list'] = []
@@ -449,7 +469,11 @@ async def start_list_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return AWAITING_IDEAS
 
 async def add_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    record_user_activity(update)
+    activity_tracker.record_bot_usage(
+        service_id="srv-d26cf32dbo4c73f27de0",
+        user_id=update.effective_user.id,
+        service_name="Ideas"
+    )
     idea_list = context.user_data.get('idea_list', [])
     idea_list.append(update.message.text)
     context.user_data['idea_list'] = idea_list
@@ -457,7 +481,11 @@ async def add_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return AWAITING_IDEAS
 
 async def ask_category_for_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    record_user_activity(update)
+    activity_tracker.record_bot_usage(
+        service_id="srv-d26cf32dbo4c73f27de0",
+        user_id=update.effective_user.id,
+        service_name="Ideas"
+    )
     idea_list = context.user_data.get('idea_list', [])
     if not idea_list:
         await update.message.reply_text("לא הזנת רעיונות. חוזר לתפריט הראשי.", reply_markup=get_main_menu_keyboard())
@@ -468,7 +496,11 @@ async def ask_category_for_list(update: Update, context: ContextTypes.DEFAULT_TY
     return CHOOSE_CATEGORY_FOR_LIST
 
 async def save_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    record_user_activity(update)
+    activity_tracker.record_bot_usage(
+        service_id="srv-d26cf32dbo4c73f27de0",
+        user_id=update.effective_user.id,
+        service_name="Ideas"
+    )
     query = update.callback_query
     await query.answer()
     category = query.data.split('_')[1]
@@ -482,7 +514,11 @@ async def save_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 async def cancel_list_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    record_user_activity(update)
+    activity_tracker.record_bot_usage(
+        service_id="srv-d26cf32dbo4c73f27de0",
+        user_id=update.effective_user.id,
+        service_name="Ideas"
+    )
     context.user_data.clear()
     await update.message.reply_text("הוספת הרשימה בוטלה. חוזר לתפריט הראשי.", reply_markup=get_main_menu_keyboard())
     return ConversationHandler.END
