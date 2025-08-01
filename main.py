@@ -2,71 +2,98 @@
 IDEAS_PER_PAGE = 10
 import os
 import sys
+import signal
 import atexit
 import logging
+import time
 
-# --- Start of Lock File Code ---
+# --- Start of Improved Lock File Code ---
 
-# Configure logging to see lock file messages
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-LOCK_FILE_PATH = "bot.lock"
+LOCK_FILE = "bot.lock"
 
-def check_lock():
-    """Check if a lock file exists and if the process is still running."""
-    if os.path.exists(LOCK_FILE_PATH):
+def is_process_running(pid):
+    """Check if a process with the given PID is running."""
+    try:
+        # os.kill(pid, 0) doesn't send a signal, but checks for process existence.
+        # It will raise a ProcessLookupError if the process doesn't exist.
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    return True
+
+def create_lock():
+    """Create a lock file, ensuring no other instance is running."""
+    if os.path.exists(LOCK_FILE):
         try:
-            with open(LOCK_FILE_PATH, 'r') as f:
-                pid = int(f.read().strip())
+            with open(LOCK_FILE, "r") as f:
+                old_pid = int(f.read().strip())
             
-            # Check if the process with the stored PID is running
-            # On Unix-like systems (like Render), os.kill(pid, 0) will raise
-            # ProcessLookupError if the process doesn't exist.
-            os.kill(pid, 0)
-            logger.info(f"Lock file found for a running process (PID: {pid}). Another instance is active. Exiting.")
-            sys.exit(1) # Exit if process is still running
-        except (ProcessLookupError, ValueError, FileNotFoundError):
-            # The process is not running, or the lock file is invalid/stale. Remove it.
-            logger.warning("Stale lock file found. Removing it.")
-            os.remove(LOCK_FILE_PATH)
-        except Exception as e:
-            logger.error(f"An unexpected error occurred while checking the lock file: {e}")
-            sys.exit(1)
+            if is_process_running(old_pid):
+                logger.error(f"🔒 Bot already running (PID: {old_pid}). Exiting.")
+                sys.exit(1)
+            else:
+                logger.warning("⚠️ Stale lock file found for a non-running process. Overwriting.")
+        except (ValueError, FileNotFoundError):
+             logger.warning("⚠️ Lock file is invalid. Overwriting.")
 
+    # Register cleanup before creating the file to handle interruptions
+    atexit.register(remove_lock)
+    
+    # Create the new lock file
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    logger.info(f"✅ Lock file created (PID: {os.getpid()})")
 
-def create_lock_file():
-    """Create the lock file and write the current PID into it."""
+def remove_lock():
+    """Remove the lock file if it belongs to the current process."""
     try:
-        with open(LOCK_FILE_PATH, 'w') as f:
-            f.write(str(os.getpid()))
-        logger.info(f"Lock file created at {LOCK_FILE_PATH} with PID: {os.getpid()}")
-    except IOError as e:
-        logger.error(f"Failed to create lock file: {e}")
-        sys.exit(1)
-
-def remove_lock_file():
-    """Remove the lock file upon exit."""
-    try:
-        if os.path.exists(LOCK_FILE_PATH):
-            os.remove(LOCK_FILE_PATH)
-            logger.info("Lock file removed.")
-    except IOError as e:
+        if os.path.exists(LOCK_FILE):
+            with open(LOCK_FILE, "r") as f:
+                pid_in_file = int(f.read().strip())
+            if pid_in_file == os.getpid():
+                os.remove(LOCK_FILE)
+                logger.info("🧹 Lock file removed.")
+    except (IOError, ValueError) as e:
         logger.warning(f"Could not remove lock file on exit: {e}")
 
 # --- Main Logic ---
+create_lock()
 
-# 1. Check for and handle existing lock file
-check_lock()
+# ===============================================================
+# Your existing bot code starts here.
+# For example:
+#
+# from telegram.ext import Application
+#
+# def main() -> None:
+#     try:
+#         logger.info("Bot is starting up...")
+#         application = Application.builder().token("YOUR_TOKEN_HERE").build()
+#         # ... add your handlers, etc.
+#         application.run_polling()
+#     finally:
+#         # The atexit handler is usually enough, but this is for extra safety
+#         remove_lock() 
+#
+# if __name__ == "__main__":
+#     main()
+# ===============================================================
 
-# 2. Create a new lock file for this instance
-create_lock_file()
-
-# 3. Register the cleanup function to run on exit
-atexit.register(remove_lock_file)
-
-# --- End of Lock File Code ---
-
+# Example of a running process for testing:
+try:
+    logger.info("🤖 Bot logic would be running here...")
+    # Keep the script alive to simulate a running bot
+    while True:
+        time.sleep(60) 
+except KeyboardInterrupt:
+    logger.info("🛑 Bot shutting down manually.")
+finally:
+    # The atexit handler will be called automatically, no need to call remove_lock() here
+    pass
 
 # ===============================================================
 # Your existing bot code starts here.
