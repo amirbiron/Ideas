@@ -89,6 +89,8 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
+# --- ✨ New constant for daily limit ---
+DAILY_LIMIT = 3
 # --- ✨ New Environment Variable for Run Mode ---
 RUN_MODE = os.getenv("RUN_MODE", "bot")
 
@@ -126,6 +128,7 @@ try:
     mongo_client = MongoClient(MONGO_URI)
     db = mongo_client.ideas_bot_db
     entries_collection = db.user_entries
+    usage_collection = db.usage_limits
     mongo_client.admin.command('ping')
     logger.info("✅ Successfully connected to MongoDB.")
 except Exception as e:
@@ -156,6 +159,48 @@ def count_user_entries(user_id: str):
 
 def delete_user_entries(user_id: str):
     return entries_collection.delete_many({"user_id": user_id}).deleted_count
+
+# --- Usage Limit Logic (Personal Use Version) ---
+def check_global_usage() -> bool:
+    """
+    Checks if the daily usage limit for the bot has been reached.
+    This version is for single-user/personal bots.
+    Returns True if usage is allowed, False otherwise.
+    """
+    today_str = datetime.utcnow().strftime('%Y-%m-%d')
+    # We use a fixed document ID for the global counter
+    usage_doc = usage_collection.find_one({"_id": "global_usage_counter"})
+
+    # First time the bot is ever used with this feature
+    if not usage_doc:
+        usage_collection.insert_one({
+            "_id": "global_usage_counter",
+            "usage_count": 1,
+            "last_usage_date": today_str
+        })
+        logger.info("First ever usage recorded. Count: 1")
+        return True
+
+    # Check if it's a new day
+    if usage_doc.get("last_usage_date") != today_str:
+        # New day, reset the counter
+        usage_collection.update_one(
+            {"_id": "global_usage_counter"},
+            {"$set": {"usage_count": 1, "last_usage_date": today_str}}
+        )
+        logger.info("New day started. Usage count reset to 1.")
+        return True
+    
+    # It's the same day, check the count
+    current_count = usage_doc.get("usage_count", 0)
+    if current_count < DAILY_LIMIT:
+        usage_collection.update_one({"_id": "global_usage_counter"}, {"$inc": {"usage_count": 1}})
+        logger.info(f"Usage count updated to {current_count + 1}.")
+        return True
+    else:
+        # Limit reached
+        logger.warning(f"Daily limit of {DAILY_LIMIT} has been reached.")
+        return False
 
 # --- OpenAI Logic ---
 async def generate_ideas(user_entries: list, category: str) -> str:
@@ -288,6 +333,19 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # --- Command Logic ---
 async def get_idea_by_category(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
+    # --- START OF PERSONAL USAGE LIMIT CHECK ---
+    if not check_global_usage():
+        limit_message = (
+            "הגעת למגבלת השימוש היומית שלך! 😅\n"
+            f"ההגבלה היא {DAILY_LIMIT} בקשות ביום. נתראה מחר!"
+        )
+        await update.callback_query.message.edit_text(
+            text=limit_message,
+            reply_markup=get_back_to_menu_keyboard()
+        )
+        return
+    # --- END OF PERSONAL USAGE LIMIT CHECK ---
+    
     user_id = str(update.effective_user.id)
     message = update.callback_query.message
     await message.edit_text(f"🤔 חושב על רעיונות בשבילך בקטגוריית '{category}'...", reply_markup=None)
