@@ -61,56 +61,10 @@ def remove_lock():
         logger.warning(f"Could not remove lock file on exit: {e}")
 
 # --- Main Logic ---
-create_lock()
 
-# ===============================================================
-# Your existing bot code starts here.
-# For example:
-#
-# from telegram.ext import Application
-#
-# def main() -> None:
-#     try:
-#         logger.info("Bot is starting up...")
-#         application = Application.builder().token("YOUR_TOKEN_HERE").build()
-#         # ... add your handlers, etc.
-#         application.run_polling()
-#     finally:
-#         # The atexit handler is usually enough, but this is for extra safety
-#         remove_lock() 
-#
-# if __name__ == "__main__":
-#     main()
-# ===============================================================
 
-# Example of a running process for testing:
-try:
-    logger.info("🤖 Bot logic would be running here...")
-    # Keep the script alive to simulate a running bot
-    while True:
-        time.sleep(60) 
-except KeyboardInterrupt:
-    logger.info("🛑 Bot shutting down manually.")
-finally:
-    # The atexit handler will be called automatically, no need to call remove_lock() here
-    pass
 
-# ===============================================================
-# Your existing bot code starts here.
-# For example:
-#
-# from telegram.ext import Application
-#
-# def main() -> None:
-#     """Start the bot."""
-#     application = Application.builder().token("YOUR_TOKEN_HERE").build()
-#     # ... add your handlers, etc.
-#     application.run_polling()
-#
-# if __name__ == "__main__":
-#     logger.info("Bot is starting up...")
-#     main()
-# ===============================================================
+
 
 
 import logging
@@ -493,6 +447,8 @@ def run_scheduled_job():
     logger.info("Scheduled job finished.")
 
 if __name__ == "__main__":
+    create_lock()
+    
     logger.info(f"Starting application in '{RUN_MODE}' mode.")
     
     if RUN_MODE == "bot":
