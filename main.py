@@ -507,6 +507,10 @@ def run_scheduled_job():
 
 if __name__ == "__main__":
     create_lock()
+
+    # --- Strategic delay to allow old Telegram connections to time out on Render ---
+    logger.info("Initial startup delay. Waiting 7 seconds...")
+    time.sleep(7)
     
     logger.info(f"Starting application in '{RUN_MODE}' mode.")
     
